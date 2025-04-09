@@ -1,0 +1,178 @@
+#!/bin/bash
+
+# PDFWipe - Convert PDF to image-based PDF to remove text selection/copy
+# https://github.com/mgrl39/pdfwipe
+# Author: mgrl39
+
+# ========= Colors =========
+colors=(96 92 94 95 97 93)
+green="\e[92m"
+red="\e[91m"
+blue="\e[94m"
+yellow="\e[93m"
+magenta="\e[95m"
+cyan="\e[96m"
+reset="\e[0m"
+
+# ========= Rainbow ASCII Function =========
+print_colored_ascii() {
+  local i=0
+  local count=0
+  while IFS= read -r line; do
+    for (( j=0; j<${#line}; j++ )); do
+      char="${line:$j:1}"
+      if (( count % 3 == 0 )); then
+        color=${colors[$(( (i + j) % ${#colors[@]} ))]}
+        echo -ne "\e[${color}m$char$reset"
+      else
+        echo -ne "$char"
+      fi
+      ((count++))
+    done
+    echo
+    ((i++))
+  done << "EOF"
+ ███████████    █████   ██████  █████   ███   █████ ███
+░░███░░░░░███  ░░███   ███░░███░░███   ░███  ░░███ ░░░
+ ░███    ░██████████  ░███ ░░░  ░███   ░███   ░███ ████ ████████   ██████
+ ░█████████████░░███ ███████    ░███   ░███   ░███░░███░░███░░███ ███░░███
+ ░███░░░░░░░███ ░███░░░███░     ░░███  █████  ███  ░███ ░███ ░███░███████
+ ░███      ░███ ░███  ░███       ░░░█████░█████░   ░███ ░███ ░███░███░░░
+ █████     ░░████████ █████        ░░███ ░░███     █████░███████ ░░██████
+░░░░░       ░░░░░░░░ ░░░░░          ░░░   ░░░     ░░░░░ ░███░░░   ░░░░░░
+                                                        ░███
+                                                        █████
+                                                       ░░░░░
+EOF
+}
+
+# ========= Start =========
+clear
+print_colored_ascii
+echo -e "${cyan}📄 PDF to Image Converter to Remove Copy/Paste${reset}"
+echo -e "\n${blue}This script converts your PDF to images and back to PDF format.${reset}"
+echo -e "${magenta}The resulting PDF will not allow copy/paste or text selection,${reset}"
+echo -e "${yellow}making it useful for documents that need copy protection.${reset}"
+echo -e "${green}The original file remains untouched.${reset}"
+echo -e "${cyan}GitHub: https://github.com/mgrl39/pdfwipe${reset}\n"
+
+# ========= Interactive file selection =========
+if [ -z "$1" ]; then
+  echo -e "${yellow}🧠 Do you want to run the program now and choose a PDF file?${reset}"
+  echo -ne "${cyan}👉 (y)es / (n)o / (q)uit: ${reset}"
+  read -r MENU
+
+  case "$MENU" in
+    [Yy]* )
+      # Check write permissions in parent directory
+      if [ ! -w "../" ]; then
+        echo -e "${red}❌ No write permissions in output directory.${reset}"
+        exit 1
+      fi
+      
+      if ! command -v fzf &> /dev/null; then
+        echo -e "${red}⚠️ 'fzf' not found.${reset}"
+        read -p "Install it now? (y/n): " INSTALLFZF
+        [[ "$INSTALLFZF" =~ ^[Yy]$ ]] && sudo apt update && sudo apt install -y fzf || { echo -e "${red}❌ Aborted.${reset}"; exit 1; }
+      fi
+      echo -e "${cyan}📂 Select a PDF file:${reset}"
+      PDF=$(find . -maxdepth 1 -type f -iname "*.pdf" | fzf --prompt="📑 Choose PDF: ")
+      [ -z "$PDF" ] && echo -e "${red}❌ No file selected.${reset}" && exit 1
+      ;;
+    [Nn]* ) echo -e "${red}❌ Cancelled.${reset}"; exit 1 ;;
+    [Qq]* ) echo -e "${red}👋 Goodbye!${reset}"; exit 0 ;;
+    * ) echo -e "${red}❌ Invalid option.${reset}"; exit 1 ;;
+  esac
+else
+  PDF="$1"
+fi
+
+# Check if input PDF exists and is readable
+if [ ! -f "$PDF" ] || [ ! -r "$PDF" ]; then
+    echo -e "${red}❌ Cannot read input PDF file: $PDF${reset}"
+    exit 1
+fi
+
+# Check if it's actually a PDF
+if ! file "$PDF" | grep -i "pdf" >/dev/null; then
+    echo -e "${red}❌ File is not a valid PDF: $PDF${reset}"
+    exit 1
+fi
+
+# Check write permissions in parent directory
+if [ ! -w "../" ]; then
+  echo -e "${red}❌ No write permissions in output directory.${reset}"
+  exit 1
+fi
+
+# ========= Prepare names & temp dir =========
+BASENAME=$(basename "$PDF" .pdf)
+TMPDIR="tmp_$BASENAME"
+OUTPUT="../${BASENAME}-pdfwipe.pdf"
+i=2
+while [[ -f "$OUTPUT" ]]; do
+  echo -e "${yellow}📝 File already exists, trying with suffix -$i${reset}"
+  OUTPUT="../${BASENAME}-pdfwipe-$i.pdf"
+  ((i++))
+  # Añadir límite de seguridad
+  if [ $i -gt 999 ]; then
+    echo -e "${red}❌ Too many files with similar names exist${reset}"
+    exit 1
+  fi
+done
+
+# ========= Check dependencies =========
+MISSING=()
+for DEP in pdftoppm convert; do
+  if ! command -v "$DEP" &> /dev/null; then
+    MISSING+=("$DEP")
+  fi
+done
+
+if [ ${#MISSING[@]} -ne 0 ]; then
+  echo -e "${red}❗ Missing: ${MISSING[*]}${reset}"
+  read -p "Install now? (y/n): " RESP
+  [[ "$RESP" =~ ^[Yy]$ ]] && sudo apt update && sudo apt install -y poppler-utils imagemagick || { echo -e "${red}❌ Aborting.${reset}"; exit 1; }
+fi
+
+# ========= Main conversion =========
+mkdir -p "$TMPDIR"
+cd "$TMPDIR" || exit
+
+echo -e "${magenta}📥 Converting PDF to images...${reset}"
+if ! pdftoppm "../$PDF" page -png; then
+    echo -e "${red}❌ Error converting PDF to images${reset}"
+    cd ..
+    rm -r "$TMPDIR"
+    exit 1
+fi
+
+# Verify that images were actually created
+if ! ls page-*.png >/dev/null 2>&1; then
+    echo -e "${red}❌ No images were generated${reset}"
+    cd ..
+    rm -r "$TMPDIR"
+    exit 1
+fi
+
+echo -e "${cyan}🖼️ Creating final PDF as: ${OUTPUT}${reset}"
+if ! convert page-*.png "$OUTPUT"; then
+    echo -e "${red}❌ Error creating final PDF${reset}"
+    cd ..
+    rm -r "$TMPDIR"
+    exit 1
+fi
+
+# Verify the output file exists and has size > 0
+if [ ! -s "$OUTPUT" ]; then
+    echo -e "${red}❌ Output PDF was not created properly${reset}"
+    cd ..
+    rm -r "$TMPDIR"
+    exit 1
+fi
+
+cd ..
+rm -r "$TMPDIR"
+
+echo -e "${green}✅ Done! File saved as: $OUTPUT${reset}"
+
